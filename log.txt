@@ -1,0 +1,4 @@
+deepctr   原始
+deepctr2  原始+dense embedding    
+deepctr3  CIN
+deepctr4  CIN+dense embedding

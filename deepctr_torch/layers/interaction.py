@@ -182,11 +182,14 @@ class CIN(nn.Module):
         self.layer_size = layer_size
         self.field_nums = [field_size]
         self.split_half = split_half
+        # 卷积后的激活层
         self.activation = activation_layer(activation)
         self.l2_reg = l2_reg
         self.seed = seed
 
         self.conv1ds = nn.ModuleList()
+        # CIN每一层的一维卷积层层, 长度 = 输入层特征数m * 前一层用于特征交叉的特征数量H_(k-1)
+        # 逐层添加用于特征交叉的卷积层, 同时计算用于下一层交叉的特征数量
         for i, size in enumerate(self.layer_size):
             self.conv1ds.append(
                 nn.Conv1d(self.field_nums[-1] * self.field_nums[0], size, 1))
@@ -205,45 +208,51 @@ class CIN(nn.Module):
         self.to(device)
 
     def forward(self, inputs):
+        # input输入，形状为batch_size * m(特征数量) * embedding_dim
         if len(inputs.shape) != 3:
             raise ValueError(
                 "Unexpected inputs dimensions %d, expect to be 3 dimensions" % (len(inputs.shape)))
         batch_size = inputs.shape[0]
         dim = inputs.shape[-1]
-        hidden_nn_layers = [inputs]
-        final_result = []
+        hidden_nn_layers = [inputs]  # 记录用于下一次特征交互的结果
+        final_result = []            # 记录用于输出的特征交叉的结果
 
         for i, size in enumerate(self.layer_size):
             # x^(k-1) * x^0
+            # 先沿着embedding_dim的维度做外积
             x = torch.einsum(
                 'bhd,bmd->bhmd', hidden_nn_layers[-1], hidden_nn_layers[0])
-            # x.shape = (batch_size , hi * m, dim)
+            # x.shape = (batch_size, hi * m, dim)
             x = x.reshape(
                 batch_size, hidden_nn_layers[-1].shape[1] * hidden_nn_layers[0].shape[1], dim)
-            # x.shape = (batch_size , hi, dim)
+            # 一维卷积, hi为feature map的数量, 卷积核沿着embedding_dim方向滑动
+            # x.shape = (batch_size, hi, dim)
             x = self.conv1ds[i](x)
-
+            # 激活函数
             if self.activation is None or self.activation == 'linear':
                 curr_out = x
             else:
                 curr_out = self.activation(x)
-
+            # 是否只输出一半的feature map
             if self.split_half:
+                # 一半用于输出, 另一半用于计算下一次特征交叉
                 if i != len(self.layer_size) - 1:
                     next_hidden, direct_connect = torch.split(
                         curr_out, 2 * [size // 2], 1)
+                # 最后一次特征交叉全部输出
                 else:
                     direct_connect = curr_out
                     next_hidden = 0
             else:
+                # 全部的feature map用户输出以及下一次特征交叉
                 direct_connect = curr_out
                 next_hidden = curr_out
 
             final_result.append(direct_connect)
             hidden_nn_layers.append(next_hidden)
 
-        result = torch.cat(final_result, dim=1)
-        result = torch.sum(result, -1)
+        result = torch.cat(final_result, dim=1)  # batch_size * featuremap_num * embedding_dim
+        result = torch.sum(result, -1)           # sum pooling  batch_size * featuremap_num
 
         return result
 

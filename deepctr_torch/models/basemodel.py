@@ -112,6 +112,7 @@ class BaseModel(nn.Module):
             linear_feature_columns + dnn_feature_columns)
         self.dnn_feature_columns = dnn_feature_columns
 
+        # 对每一个稀疏的特征构造一个Embedding层（通过SparseFeat中记录的vocab_size以及embedding的维度）
         self.embedding_dict = create_embedding_matrix(dnn_feature_columns, init_std, sparse=False, device=device)
         #         nn.ModuleDict(
         #             {feat.embedding_name: nn.Embedding(feat.dimension, embedding_size, sparse=True) for feat in
@@ -135,6 +136,7 @@ class BaseModel(nn.Module):
         self.history = History()
 
     def fit(self, x=None, y=None, batch_size=None, epochs=1, verbose=1, initial_epoch=0, validation_split=0.,
+            model_path='ckpt/model.pth',
             validation_data=None, shuffle=True, callbacks=None):
         """
 
@@ -152,9 +154,10 @@ class BaseModel(nn.Module):
 
         :return: A `History` object. Its `History.history` attribute is a record of training loss values and metrics values at successive epochs, as well as validation loss values and validation metrics values (if applicable).
         """
+        best_val_perfomerance = 0.
         if isinstance(x, dict):
             x = [x[feature] for feature in self.feature_index]
-
+        # 分割训练集和验证集
         do_validation = False
         if validation_data:
             do_validation = True
@@ -191,7 +194,7 @@ class BaseModel(nn.Module):
         for i in range(len(x)):
             if len(x[i].shape) == 1:
                 x[i] = np.expand_dims(x[i], axis=1)
-
+        # 将训练数据转换为tensor
         train_tensor_data = Data.TensorDataset(
             torch.from_numpy(
                 np.concatenate(x, axis=-1)),
@@ -229,6 +232,7 @@ class BaseModel(nn.Module):
         # Train
         print("Train on {0} samples, validate on {1} samples, {2} steps per epoch".format(
             len(train_tensor_data), len(val_y), steps_per_epoch))
+        # 每个epoch训练
         for epoch in range(initial_epoch, epochs):
             callbacks.on_epoch_begin(epoch)
             epoch_logs = {}
@@ -237,14 +241,16 @@ class BaseModel(nn.Module):
             total_loss_epoch = 0
             train_result = {}
             try:
+                # 每个step训练
                 with tqdm(enumerate(train_loader), disable=verbose != 1) as t:
                     for _, (x_train, y_train) in t:
                         x = x_train.to(self.device).float()
                         y = y_train.to(self.device).float()
 
                         y_pred = model(x).squeeze()
-
+                        # 梯度置零
                         optim.zero_grad()
+                        # 计算loss
                         if isinstance(loss_func, list):
                             assert len(loss_func) == self.num_tasks,\
                                 "the length of `loss_func` should be equal with `self.num_tasks`"
@@ -253,11 +259,12 @@ class BaseModel(nn.Module):
                         else:
                             loss = loss_func(y_pred, y.squeeze(), reduction='sum')
                         reg_loss = self.get_regularization_loss()
-
+                        # 总损失包含分类的binary_crossentropy以及正则化损失
                         total_loss = loss + reg_loss + self.aux_loss
 
                         loss_epoch += loss.item()
                         total_loss_epoch += total_loss.item()
+                        # 梯度回传 更新参数
                         total_loss.backward()
                         optim.step()
 
@@ -275,14 +282,23 @@ class BaseModel(nn.Module):
             t.close()
 
             # Add epoch_logs
+            # 计算epoch的损失以及AUC LogLoss
             epoch_logs["loss"] = total_loss_epoch / sample_num
             for name, result in train_result.items():
                 epoch_logs[name] = np.sum(result) / steps_per_epoch
-
+            # 在验证集上进行评价
             if do_validation:
                 eval_result = self.evaluate(val_x, val_y, batch_size)
                 for name, result in eval_result.items():
                     epoch_logs["val_" + name] = result
+
+            # val_perfomerance
+            val_perfomerance = 0.
+            val_perfomerance += epoch_logs["val_auc"]
+            val_perfomerance += 1 - epoch_logs["val_binary_crossentropy"]
+            if val_perfomerance > best_val_perfomerance:
+                best_val_perfomerance = val_perfomerance
+                torch.save(self.state_dict(), model_path)
             # verbose
             if verbose > 0:
                 epoch_time = int(time.time() - start_time)
@@ -299,6 +315,10 @@ class BaseModel(nn.Module):
                     for name in self.metrics:
                         eval_str += " - " + "val_" + name + \
                                     ": {0: .4f}".format(epoch_logs["val_" + name])
+
+                    eval_str += " - " + "val_perfomerance: " + str(val_perfomerance)
+                    eval_str += " - " + "best_val_perfomerance: " + str(best_val_perfomerance)
+                    
                 print(eval_str)
             callbacks.on_epoch_end(epoch, epoch_logs)
             if self.stop_training:
@@ -430,6 +450,10 @@ class BaseModel(nn.Module):
     def add_auxiliary_loss(self, aux_loss, alpha):
         self.aux_loss = aux_loss * alpha
 
+    # 分别获得训练所使用的optimizer，损失函数以及评价指标
+    # 优化器使用adam
+    # 损失函数使用binary_cross_entropy损失
+    # 评价指标包含AUC以及LogLoss
     def compile(self, optimizer,
                 loss=None,
                 metrics=None,

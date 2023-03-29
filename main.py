@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
+import argparse
+import os
+
 import pandas as pd
 import torch
 from sklearn.metrics import log_loss, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
-from deepctr_torch.inputs import SparseFeat, DenseFeat, get_feature_names
+from deepctr_torch.inputs import DenseFeat, SparseFeat, get_feature_names
 from deepctr_torch.models import *
 
-import argparse
-import os
 
 def seed_everything(seed_value):
     torch.manual_seed(seed_value)
@@ -47,8 +48,8 @@ if __name__ == "__main__":
         n_sample = 45840617
         n_used_sample = int(n_sample)
 
-        train_file = "/ceph/home/caiyr18/hdd/xdeepfm/criteo/train.txt"
-        test_file = "/ceph/home/caiyr18/xdeepfm/criteo/test.txt"
+        train_file = "./dataset/train.txt"
+        test_file = "./dataset/test.txt"
 
         # 读取数据
         train_data = pd.read_csv(train_file, sep='\t', header=None, names=['label'] + dense_features + sparse_features,
